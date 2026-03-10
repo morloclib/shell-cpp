@@ -1,0 +1,11 @@
+name: shell-cpp
+version: 0.1.0
+homepage: https://github.com/morloclib/shell-cpp
+synopsis: C++ implementations for shell operations
+description: C++ implementations for the shell module
+category: system
+license: MIT
+author: "Zebulun Arendsee"
+maintainer: "z@morloc.io"
+github: https://github.com/morloclib/shell-cpp
+bug-reports: https://github.com/morloclib/shell-cpp

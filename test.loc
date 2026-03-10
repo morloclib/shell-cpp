@@ -1,0 +1,4 @@
+module test-shell-cpp (test)
+
+import shell.test (test)
+import shell-cpp

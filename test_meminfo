@@ -1,0 +1,4 @@
+#!/bin/sh
+exec morloc-nexus "$0" "$@"
+### MANIFEST ###
+{"version":1,"name":"test_meminfo","build_dir":"/home/z/projects/morloc-core/morloc-workspace/lib/stdlib/shell-cpp","build_time":1772988502,"pools":[{"lang":"cpp","exec":["pools/test_meminfo/pool-cpp.out"],"socket":"pipe-cpp"}],"commands":[{"name":"test","type":"remote","mid":1,"pool":0,"needed_pools":[0],"arg_schemas":[],"return_schema":"<MemInfo>m95total<int64_t>i89available<int64_t>i84used<int64_t>i84free<int64_t>i87buffers<int64_t>i86cached<int64_t>i89swapTotal<int64_t>i88swapUsed<int64_t>i88swapFree<int64_t>i8","desc":[],"return_type":"MemInfo","return_desc":["System memory information"],"args":[],"group":null}],"groups":[]}

@@ -1,0 +1,4 @@
+#!/bin/sh
+exec morloc-nexus "$0" "$@"
+### MANIFEST ###
+{"version":1,"name":"test_cross1","build_dir":"/home/z/projects/morloc-core/morloc-workspace/lib/stdlib/shell-cpp","build_time":1772988634,"pools":[{"lang":"py","exec":["python3","pools/test_cross1/pool.py"],"socket":"pipe-py"},{"lang":"cpp","exec":["pools/test_cross1/pool-cpp.out"],"socket":"pipe-cpp"}],"commands":[{"name":"test","type":"remote","mid":1,"pool":0,"needed_pools":[0,1],"arg_schemas":[],"return_schema":"<bool>b","desc":[],"return_type":"Bool","return_desc":[],"args":[],"group":null}],"groups":[]}

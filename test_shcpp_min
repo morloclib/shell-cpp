@@ -1,0 +1,4 @@
+#!/bin/sh
+exec morloc-nexus "$0" "$@"
+### MANIFEST ###
+{"version":1,"name":"test_shcpp_min","build_dir":"/home/z/projects/morloc-core/morloc-workspace/lib/stdlib/shell-cpp","build_time":1772987331,"pools":[{"lang":"cpp","exec":["pools/test_shcpp_min/pool-cpp.out"],"socket":"pipe-cpp"}],"commands":[{"name":"test","type":"remote","mid":1,"pool":0,"needed_pools":[0],"arg_schemas":[],"return_schema":"<std::string>s","desc":[],"return_type":"Str","return_desc":[],"args":[],"group":null}],"groups":[]}

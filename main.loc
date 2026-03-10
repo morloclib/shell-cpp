@@ -1,0 +1,138 @@
+module shell-cpp (*)
+
+import shell
+import root-cpp
+
+
+-- Type alias mappings
+------------------------
+
+type Cpp => Path = "std::string"
+type Cpp => DirPath = "std::string"
+type Cpp => Extension = "std::string"
+type Cpp => GlobPattern = "std::string"
+type Cpp => EnvVar = "std::string"
+type Cpp => Pid = "int"
+type Cpp => ExitCode = "int"
+type Cpp => Signal = "int"
+type Cpp => FileMode = "int"
+type Cpp => Uid = "int"
+type Cpp => Gid = "int"
+type Cpp => Bytes = "int64_t"
+type Cpp => Timestamp = "double"
+
+
+-- Record type mappings
+-------------------------
+
+record Cpp => FileStat = "FileStat"
+record Cpp => ProcessResult = "ProcessResult"
+record Cpp => ProcessInfo = "ProcessInfo"
+record Cpp => MemInfo = "MemInfo"
+record Cpp => DiskInfo = "DiskInfo"
+record Cpp => SystemInfo = "SystemInfo"
+record Cpp => LoadInfo = "LoadInfo"
+record Cpp => DirEntry = "DirEntry"
+
+record Cpp => LsOpts = "LsOpts"
+record Cpp => FindOpts = "FindOpts"
+record Cpp => CpOpts = "CpOpts"
+record Cpp => RmOpts = "RmOpts"
+record Cpp => RunOpts = "RunOpts"
+
+
+-- Sourced functions
+----------------------
+
+source Cpp from "shell.hpp"
+    ( "morloc_path_join" as pathJoin
+    , "morloc_path_split" as pathSplit
+    , "morloc_path_dir" as pathDir
+    , "morloc_path_base" as pathBase
+    , "morloc_path_ext" as pathExt
+    , "morloc_path_stem" as pathStem
+    , "morloc_replace_ext" as replaceExt
+    , "morloc_add_ext" as addExt
+    , "morloc_drop_ext" as dropExt
+    , "morloc_norm_path" as normPath
+    , "morloc_is_absolute" as isAbsolute
+    , "morloc_is_relative" as isRelative
+    , "morloc_path_components" as pathComponents
+    , "morloc_path_join" as (</>)
+    , "morloc_add_ext" as (<.>)
+    , "morloc_pwd" as pwd
+    , "morloc_cd" as cd
+    , "morloc_realpath" as realpath
+    , "morloc_home_dir" as homeDir
+    , "morloc_tmp_dir" as tmpDir
+    , "morloc_ls" as ls
+    , "morloc_ls_with" as lsWith
+    , "morloc_ls_stat" as lsStat
+    , "morloc_cp" as cp
+    , "morloc_mv" as mv
+    , "morloc_rm" as rm
+    , "morloc_mkdir" as mkdir
+    , "morloc_touch" as touch
+    , "morloc_chmod" as chmod
+    , "morloc_chown" as chown
+    , "morloc_symlink" as symlink
+    , "morloc_hardlink" as hardlink
+    , "morloc_readlink" as readlink
+    , "morloc_rename" as rename
+    , "morloc_read_file" as readFile
+    , "morloc_write_file" as writeFile
+    , "morloc_append_file" as appendFile
+    , "morloc_read_lines" as readLines
+    , "morloc_write_lines" as writeLines
+    , "morloc_read_bytes" as readBytes
+    , "morloc_write_bytes" as writeBytes
+    , "morloc_read_head" as readHead
+    , "morloc_stat" as stat
+    , "morloc_file_size" as fileSize
+    , "morloc_path_exists" as pathExists
+    , "morloc_is_file" as isFile
+    , "morloc_is_dir" as isDir
+    , "morloc_glob" as glob
+    , "morloc_find" as findFiles
+    , "morloc_walk" as walk
+    , "morloc_walk_filter" as walkFilter
+    , "morloc_run" as run
+    , "morloc_run_with" as runWith
+    , "morloc_shell" as shell
+    , "morloc_capture" as capture
+    , "morloc_exec" as exec
+    , "morloc_get_pid" as getPid
+    , "morloc_get_parent_pid" as getParentPid
+    , "morloc_list_processes" as listProcesses
+    , "morloc_get_process" as getProcess
+    , "morloc_process_children" as processChildren
+    , "morloc_kill" as kill
+    , "morloc_wait_pid" as waitPid
+    , "morloc_uname" as uname
+    , "morloc_hostname" as hostname
+    , "morloc_uptime" as uptime
+    , "morloc_cpu_count" as cpuCount
+    , "morloc_mem_info" as memInfo
+    , "morloc_disk_info" as diskInfo
+    , "morloc_load_avg" as loadAvg
+    , "morloc_get_env" as getEnv
+    , "morloc_set_env" as setEnv
+    , "morloc_unset_env" as unsetEnv
+    , "morloc_environ" as environ
+    , "morloc_has_env" as hasEnv
+    )
+
+
+-- Signal constants
+---------------------
+
+sigHUP = 1
+sigINT = 2
+sigQUIT = 3
+sigKILL = 9
+sigTERM = 15
+sigSTOP = 19
+sigCONT = 18
+sigUSR1 = 10
+sigUSR2 = 12
+sigALRM = 14
