@@ -35,29 +35,29 @@ namespace fs = std::filesystem;
 
 struct FileStat {
     int64_t size;
-    double mtime;
-    double atime;
-    double ctime;
-    int mode;
-    int uid;
-    int gid;
+    int64_t mtime;
+    int64_t atime;
+    int64_t ctime;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
     std::string owner;
     std::string group;
-    int nlinks;
+    uint64_t nlinks;
     bool isFile;
     bool isDir;
     bool isSymlink;
 };
 
 struct ProcessResult {
-    int exitCode;
+    int32_t exitCode;
     std::string stdout;
     std::string stderr;
 };
 
 struct ProcessInfo {
-    int pid;
-    int ppid;
+    int32_t pid;
+    int32_t ppid;
     std::string user;
     std::string state;
     double cpuPercent;
@@ -220,7 +220,7 @@ static ProcessResult run_command(const std::vector<std::string>& argv,
 
     int status = 0;
     waitpid(child, &status, 0);
-    int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    int32_t code = WIFEXITED(status) ? static_cast<int32_t>(WEXITSTATUS(status)) : -1;
     return ProcessResult{code, out_str, err_str};
 }
 
@@ -241,15 +241,15 @@ static FileStat stat_path(const std::string& p) {
     lstat(p.c_str(), &st);
     FileStat fs;
     fs.size = static_cast<int64_t>(st.st_size);
-    fs.mtime = static_cast<double>(st.st_mtime);
-    fs.atime = static_cast<double>(st.st_atime);
-    fs.ctime = static_cast<double>(st.st_ctime);
-    fs.mode = st.st_mode & 07777;
-    fs.uid = static_cast<int>(st.st_uid);
-    fs.gid = static_cast<int>(st.st_gid);
+    fs.mtime = static_cast<int64_t>(st.st_mtime);
+    fs.atime = static_cast<int64_t>(st.st_atime);
+    fs.ctime = static_cast<int64_t>(st.st_ctime);
+    fs.mode = static_cast<uint32_t>(st.st_mode & 07777);
+    fs.uid = static_cast<uint32_t>(st.st_uid);
+    fs.gid = static_cast<uint32_t>(st.st_gid);
     fs.owner = get_owner(st.st_uid);
     fs.group = get_group(st.st_gid);
-    fs.nlinks = static_cast<int>(st.st_nlink);
+    fs.nlinks = static_cast<uint64_t>(st.st_nlink);
     fs.isFile = S_ISREG(st.st_mode);
     fs.isDir = S_ISDIR(st.st_mode);
     fs.isSymlink = S_ISLNK(st.st_mode);
@@ -493,12 +493,12 @@ inline mlc::Unit morloc_touch(const std::string& p) {
     return mlc::Unit();
 }
 
-inline mlc::Unit morloc_chmod(int mode, const std::string& p) {
+inline mlc::Unit morloc_chmod(uint32_t mode, const std::string& p) {
     ::chmod(p.c_str(), static_cast<mode_t>(mode));
     return mlc::Unit();
 }
 
-inline mlc::Unit morloc_chown(int uid, int gid, const std::string& p) {
+inline mlc::Unit morloc_chown(uint32_t uid, uint32_t gid, const std::string& p) {
     ::chown(p.c_str(), static_cast<uid_t>(uid), static_cast<gid_t>(gid));
     return mlc::Unit();
 }
@@ -778,17 +778,17 @@ inline mlc::Unit morloc_exec(const std::string& cmd, const std::vector<std::stri
 // I. Process information
 // ============================================================================
 
-inline int morloc_get_pid() {
-    return static_cast<int>(getpid());
+inline int32_t morloc_get_pid() {
+    return static_cast<int32_t>(getpid());
 }
 
-inline int morloc_get_parent_pid() {
-    return static_cast<int>(getppid());
+inline int32_t morloc_get_parent_pid() {
+    return static_cast<int32_t>(getppid());
 }
 
 namespace morloc_shell_internal {
 
-static ProcessInfo build_process_info(int pid) {
+static ProcessInfo build_process_info(int32_t pid) {
     ProcessInfo pi;
     pi.pid = pid;
     pi.ppid = 0;
@@ -892,7 +892,7 @@ inline std::vector<ProcessInfo> morloc_list_processes() {
             if (c < '0' || c > '9') { all_digits = false; break; }
         }
         if (all_digits) {
-            int pid = std::stoi(name);
+            int32_t pid = static_cast<int32_t>(std::stoi(name));
             result.push_back(morloc_shell_internal::build_process_info(pid));
         }
     }
@@ -900,11 +900,11 @@ inline std::vector<ProcessInfo> morloc_list_processes() {
     return result;
 }
 
-inline ProcessInfo morloc_get_process(int pid) {
+inline ProcessInfo morloc_get_process(int32_t pid) {
     return morloc_shell_internal::build_process_info(pid);
 }
 
-inline std::vector<ProcessInfo> morloc_process_children(int pid) {
+inline std::vector<ProcessInfo> morloc_process_children(int32_t pid) {
     std::vector<ProcessInfo> all = morloc_list_processes();
     std::vector<ProcessInfo> children;
     for (const auto& p : all) {
@@ -913,15 +913,15 @@ inline std::vector<ProcessInfo> morloc_process_children(int pid) {
     return children;
 }
 
-inline mlc::Unit morloc_kill(int sig, int pid) {
+inline mlc::Unit morloc_kill(int32_t sig, int32_t pid) {
     ::kill(static_cast<pid_t>(pid), sig);
     return mlc::Unit();
 }
 
-inline int morloc_wait_pid(int pid) {
+inline int32_t morloc_wait_pid(int32_t pid) {
     int status = 0;
     waitpid(static_cast<pid_t>(pid), &status, 0);
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFEXITED(status)) return static_cast<int32_t>(WEXITSTATUS(status));
     return -1;
 }
 

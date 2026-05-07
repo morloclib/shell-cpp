@@ -4,24 +4,6 @@ import shell
 import root-cpp
 
 
--- Type alias mappings
-------------------------
-
-type Cpp => Path = "std::string"
-type Cpp => DirPath = "std::string"
-type Cpp => Extension = "std::string"
-type Cpp => GlobPattern = "std::string"
-type Cpp => EnvVar = "std::string"
-type Cpp => Pid = "int"
-type Cpp => ExitCode = "int"
-type Cpp => Signal = "int"
-type Cpp => FileMode = "int"
-type Cpp => Uid = "int"
-type Cpp => Gid = "int"
-type Cpp => Bytes = "int64_t"
-type Cpp => Timestamp = "double"
-
-
 -- Record type mappings
 -------------------------
 
