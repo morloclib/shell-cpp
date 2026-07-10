@@ -82,7 +82,6 @@ source Cpp from "shell.hpp"
     , "morloc_run_with" as runWith
     , "morloc_shell" as shell
     , "morloc_capture" as capture
-    , "morloc_exec" as exec
     , "morloc_get_pid" as getPid
     , "morloc_get_parent_pid" as getParentPid
     , "morloc_list_processes" as listProcesses

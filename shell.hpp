@@ -764,16 +764,6 @@ inline std::string morloc_capture(const std::string& cmd, const std::vector<std:
     return r.stdout;
 }
 
-inline mlc::Unit morloc_exec(const std::string& cmd, const std::vector<std::string>& args) {
-    std::vector<char*> c_argv;
-    c_argv.push_back(const_cast<char*>(cmd.c_str()));
-    for (const auto& a : args) c_argv.push_back(const_cast<char*>(a.c_str()));
-    c_argv.push_back(nullptr);
-    execvp(cmd.c_str(), c_argv.data());
-    throw std::runtime_error("exec failed: " + cmd);
-}
-
-
 // ============================================================================
 // I. Process information
 // ============================================================================
