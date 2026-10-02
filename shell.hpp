@@ -17,8 +17,11 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/utsname.h>
-#include <sys/sysinfo.h>
 #include <unistd.h>
+#include <poll.h>
+#include <chrono>
+#include <cerrno>
+#include <regex>
 #include <signal.h>
 #include <dirent.h>
 #include <pwd.h>
@@ -27,6 +30,8 @@
 #include "mlccpptypes/prelude.hpp"
 
 namespace fs = std::filesystem;
+
+extern char** environ;
 
 
 // ============================================================================
@@ -155,72 +160,132 @@ struct RunOpts {
 
 namespace morloc_shell_internal {
 
-static std::string read_stream(FILE* fp) {
-    std::string result;
-    char buf[4096];
-    while (true) {
-        size_t n = fread(buf, 1, sizeof(buf), fp);
-        if (n == 0) break;
-        result.append(buf, n);
+// The file `cmd` names: itself when it holds a '/', otherwise the first
+// executable of that name on PATH, as execvp would find it. Empty if none.
+static std::string resolve_program(const std::string& cmd) {
+    if (cmd.find('/') != std::string::npos) return cmd;
+    const char* path = getenv("PATH");
+    std::string dirs = path ? path : "/usr/bin:/bin";
+    size_t start = 0;
+    while (start <= dirs.size()) {
+        size_t colon = dirs.find(':', start);
+        std::string dir = dirs.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        std::string candidate = (dir.empty() ? std::string(".") : dir) + "/" + cmd;
+        struct stat st;
+        if (::stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(candidate.c_str(), X_OK) == 0) {
+            return candidate;
+        }
+        if (colon == std::string::npos) break;
+        start = colon + 1;
     }
-    return result;
+    return "";
 }
 
+// Run argv[0] with `args`, collecting its output. Everything the child needs
+// is built before the fork: a pool is multithreaded, so the child may make
+// only async-signal-safe calls before exec. Both pipes are read together, so
+// a child that fills one while the other is read cannot stall. A run still
+// going after `timeout_s` seconds (0: no limit) is killed and reported as
+// exit code -1 with stderr "timeout". A child killed by signal N reports -N.
 static ProcessResult run_command(const std::vector<std::string>& argv,
                                  const std::string& cwd,
                                  const std::vector<std::string>& env_pairs,
-                                 bool merge_stderr) {
-    int stdout_pipe[2], stderr_pipe[2];
-    pipe(stdout_pipe);
-    if (!merge_stderr) pipe(stderr_pipe);
+                                 bool merge_stderr,
+                                 int timeout_s = 0) {
+    std::string program = argv.empty() ? std::string() : resolve_program(argv[0]);
+    if (program.empty()) return ProcessResult{127, "", ""};
+
+    std::vector<char*> c_argv;
+    for (const auto& a : argv) c_argv.push_back(const_cast<char*>(a.c_str()));
+    c_argv.push_back(nullptr);
+
+    std::vector<std::string> env_strs;
+    for (char** e = environ; *e; ++e) {
+        std::string kv(*e);
+        std::string key = kv.substr(0, kv.find('='));
+        bool overridden = false;
+        for (const auto& pair : env_pairs) {
+            if (pair.substr(0, pair.find('=')) == key) { overridden = true; break; }
+        }
+        if (!overridden) env_strs.push_back(kv);
+    }
+    for (const auto& pair : env_pairs) {
+        if (pair.find('=') != std::string::npos) env_strs.push_back(pair);
+    }
+    std::vector<char*> c_envp;
+    for (auto& e : env_strs) c_envp.push_back(const_cast<char*>(e.c_str()));
+    c_envp.push_back(nullptr);
+    bool chdir_needed = !cwd.empty() && cwd != ".";
+
+    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
+    if (pipe(out_pipe) != 0 || (!merge_stderr && pipe(err_pipe) != 0)) {
+        int e = errno;
+        for (int fd : {out_pipe[0], out_pipe[1], err_pipe[0], err_pipe[1]}) if (fd >= 0) close(fd);
+        return ProcessResult{-1, "", std::string("pipe: ") + strerror(e)};
+    }
 
     pid_t child = fork();
+    if (child < 0) {
+        int e = errno;
+        for (int fd : {out_pipe[0], out_pipe[1], err_pipe[0], err_pipe[1]}) if (fd >= 0) close(fd);
+        return ProcessResult{-1, "", std::string("fork: ") + strerror(e)};
+    }
     if (child == 0) {
-        // child
-        close(stdout_pipe[0]);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        close(stdout_pipe[1]);
+        close(out_pipe[0]);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        close(out_pipe[1]);
         if (merge_stderr) {
             dup2(STDOUT_FILENO, STDERR_FILENO);
         } else {
-            close(stderr_pipe[0]);
-            dup2(stderr_pipe[1], STDERR_FILENO);
-            close(stderr_pipe[1]);
+            close(err_pipe[0]);
+            dup2(err_pipe[1], STDERR_FILENO);
+            close(err_pipe[1]);
         }
-        if (!cwd.empty() && cwd != ".") {
-            if (chdir(cwd.c_str()) != 0) _exit(127);
-        }
-        for (const auto& pair : env_pairs) {
-            auto eq = pair.find('=');
-            if (eq != std::string::npos) {
-                setenv(pair.substr(0, eq).c_str(), pair.substr(eq + 1).c_str(), 1);
-            }
-        }
-        std::vector<char*> c_argv;
-        for (const auto& a : argv) c_argv.push_back(const_cast<char*>(a.c_str()));
-        c_argv.push_back(nullptr);
-        execvp(c_argv[0], c_argv.data());
+        if (chdir_needed && chdir(cwd.c_str()) != 0) _exit(127);
+        execve(program.c_str(), c_argv.data(), c_envp.data());
         _exit(127);
     }
 
-    // parent
-    close(stdout_pipe[1]);
+    close(out_pipe[1]);
+    if (!merge_stderr) close(err_pipe[1]);
     std::string out_str, err_str;
-
-    FILE* out_fp = fdopen(stdout_pipe[0], "r");
-    out_str = read_stream(out_fp);
-    fclose(out_fp);
-
-    if (!merge_stderr) {
-        close(stderr_pipe[1]);
-        FILE* err_fp = fdopen(stderr_pipe[0], "r");
-        err_str = read_stream(err_fp);
-        fclose(err_fp);
+    struct pollfd fds[2] = {{out_pipe[0], POLLIN, 0}, {merge_stderr ? -1 : err_pipe[0], POLLIN, 0}};
+    std::string* sinks[2] = {&out_str, &err_str};
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
+    bool timed_out = false;
+    char buf[8192];
+    while (fds[0].fd >= 0 || fds[1].fd >= 0) {
+        int wait_ms = -1;
+        if (timeout_s > 0) {
+            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+            if (left <= 0) { timed_out = true; break; }
+            wait_ms = static_cast<int>(left);
+        }
+        int rc = poll(fds, 2, wait_ms);
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int k = 0; k < 2; k++) {
+            if (fds[k].fd < 0 || fds[k].revents == 0) continue;
+            ssize_t n = read(fds[k].fd, buf, sizeof(buf));
+            if (n > 0) {
+                sinks[k]->append(buf, static_cast<size_t>(n));
+            } else if (n == 0 || errno != EINTR) {
+                close(fds[k].fd);
+                fds[k].fd = -1;
+            }
+        }
     }
+    for (auto& f : fds) if (f.fd >= 0) close(f.fd);
+    if (timed_out) kill(child, SIGKILL);
 
     int status = 0;
-    waitpid(child, &status, 0);
-    int32_t code = WIFEXITED(status) ? static_cast<int32_t>(WEXITSTATUS(status)) : -1;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    if (timed_out) return ProcessResult{-1, "", "timeout"};
+    int32_t code = WIFEXITED(status) ? static_cast<int32_t>(WEXITSTATUS(status))
+                 : WIFSIGNALED(status) ? -static_cast<int32_t>(WTERMSIG(status))
+                 : -1;
     return ProcessResult{code, out_str, err_str};
 }
 
@@ -751,7 +816,7 @@ inline ProcessResult morloc_run_with(const RunOpts& opts, const std::string& cmd
     std::vector<std::string> argv;
     argv.push_back(cmd);
     argv.insert(argv.end(), args.begin(), args.end());
-    return morloc_shell_internal::run_command(argv, opts.cwd, opts.env, opts.mergeStderr);
+    return morloc_shell_internal::run_command(argv, opts.cwd, opts.env, opts.mergeStderr, opts.timeout);
 }
 
 inline ProcessResult morloc_shell(const std::string& cmd) {
@@ -778,126 +843,138 @@ inline int32_t morloc_get_parent_pid() {
 
 namespace morloc_shell_internal {
 
-static ProcessInfo build_process_info(int32_t pid) {
-    ProcessInfo pi;
-    pi.pid = pid;
-    pi.ppid = 0;
-    pi.cpuPercent = 0.0;
-    pi.memPercent = 0.0;
-    pi.virt = 0;
-    pi.rss = 0;
-    pi.shared = 0;
-    pi.nice = 0;
-    pi.priority = 0;
-    pi.cpuTime = 0.0;
+// Process listings come from ps(1), whose POSIX fields read the same on Linux
+// and macOS, so one code path serves both. Two calls: the command name is the
+// last field of one, the full command line of the other, since either may
+// contain spaces.
+static const std::vector<std::string> PS_FIELDS =
+    {"pid", "ppid", "uid", "pcpu", "pmem", "vsz", "rss", "nice", "pri", "time", "stat"};
 
-    // read /proc/<pid>/stat
-    std::string stat_path = "/proc/" + std::to_string(pid) + "/stat";
-    std::ifstream sf(stat_path);
-    if (sf.is_open()) {
-        std::string content;
-        std::getline(sf, content);
-        // find comm (between parentheses)
-        auto lp = content.find('(');
-        auto rp = content.rfind(')');
-        if (lp != std::string::npos && rp != std::string::npos) {
-            pi.command = content.substr(lp + 1, rp - lp - 1);
-            std::string rest = content.substr(rp + 2);
-            std::istringstream iss(rest);
-            std::string state_s;
-            int ppid, pgrp, session, tty, tpgid;
-            unsigned long flags, minflt, cminflt, majflt, cmajflt;
-            long unsigned utime, stime;
-            long cutime, cstime, prio, nice_val;
-            long unsigned vsize;
-            long rss_pages;
+static std::vector<std::string> split_ws(const std::string& line, size_t max_fields) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && isspace(static_cast<unsigned char>(line[i]))) i++;
+        if (i >= line.size()) break;
+        if (out.size() + 1 == max_fields) {
+            size_t e = line.find_last_not_of(" \t\r\n");
+            out.push_back(line.substr(i, e + 1 - i));
+            break;
+        }
+        size_t j = i;
+        while (j < line.size() && !isspace(static_cast<unsigned char>(line[j]))) j++;
+        out.push_back(line.substr(i, j - i));
+        i = j;
+    }
+    return out;
+}
 
-            iss >> state_s >> ppid >> pgrp >> session >> tty >> tpgid
-                >> flags >> minflt >> cminflt >> majflt >> cmajflt
-                >> utime >> stime >> cutime >> cstime >> prio >> nice_val;
+static std::vector<std::string> lines_of(const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line)) out.push_back(line);
+    return out;
+}
 
-            // skip num_threads, itrealvalue
-            long dummy;
-            iss >> dummy >> dummy;
-            // starttime
-            long unsigned starttime;
-            iss >> starttime >> vsize >> rss_pages;
+// Seconds in a ps TIME field: [[DD-]HH:]MM:SS[.ss].
+static double ps_seconds(std::string text) {
+    double days = 0;
+    auto dash = text.find('-');
+    if (dash != std::string::npos) {
+        days = std::stod(text.substr(0, dash));
+        text = text.substr(dash + 1);
+    }
+    double secs = 0;
+    std::istringstream iss(text);
+    std::string part;
+    while (std::getline(iss, part, ':')) secs = secs * 60 + std::stod(part);
+    return days * 86400 + secs;
+}
 
-            pi.state = state_s;
-            pi.ppid = ppid;
-            pi.priority = static_cast<int>(prio);
-            pi.nice = static_cast<int>(nice_val);
-            pi.virt = static_cast<int64_t>(vsize);
-            long page_size = sysconf(_SC_PAGE_SIZE);
-            pi.rss = static_cast<int64_t>(rss_pages * page_size);
-            long clk = sysconf(_SC_CLK_TCK);
-            pi.cpuTime = static_cast<double>(utime + stime) / clk;
+static int ps_int(const std::string& text) {
+    try { return std::stoi(text); } catch (...) { return 0; }  // "-" for a real-time process's nice
+}
+
+// File-backed and shared resident memory, where the platform reports it.
+static int64_t shared_bytes(int32_t pid) {
+    int64_t total = 0;
+    std::ifstream f("/proc/" + std::to_string(pid) + "/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("RssFile:", 0) == 0 || line.rfind("RssShmem:", 0) == 0) {
+            total += std::stoll(line.substr(line.find(':') + 1)) * 1024;
         }
     }
+    return total;
+}
 
-    // read /proc/<pid>/status for uid
-    std::string status_path = "/proc/" + std::to_string(pid) + "/status";
-    std::ifstream stf(status_path);
-    uid_t uid = 0;
-    if (stf.is_open()) {
-        std::string line;
-        while (std::getline(stf, line)) {
-            if (line.substr(0, 4) == "Uid:") {
-                std::istringstream iss(line.substr(5));
-                int u;
-                iss >> u;
-                uid = static_cast<uid_t>(u);
-                break;
-            }
-        }
+// ProcessInfo records for `pids`, or for every process when empty.
+static std::vector<ProcessInfo> processes(const std::vector<int32_t>& pids) {
+    std::vector<std::string> select;
+    if (pids.empty()) {
+        select = {"-A"};
+    } else {
+        std::string list;
+        for (auto p : pids) list += (list.empty() ? "" : ",") + std::to_string(p);
+        select = {"-p", list};
     }
-    pi.user = get_owner(uid);
+    std::string cols;
+    for (const auto& f : PS_FIELDS) cols += f + "=,";
+    cols += "comm=";
 
-    // read cmdline
-    std::string cmdline_path = "/proc/" + std::to_string(pid) + "/cmdline";
-    std::ifstream cf(cmdline_path);
-    if (cf.is_open()) {
-        std::string cl;
-        std::getline(cf, cl);
-        std::replace(cl.begin(), cl.end(), '\0', ' ');
-        // trim trailing space
-        while (!cl.empty() && cl.back() == ' ') cl.pop_back();
-        pi.cmdline = cl;
+    std::vector<std::string> argv = {"ps"};
+    argv.insert(argv.end(), select.begin(), select.end());
+    std::vector<std::string> args_argv = argv;
+    args_argv.push_back("-o");
+    args_argv.push_back("pid=,args=");
+    argv.push_back("-o");
+    argv.push_back(cols);
+
+    std::map<int32_t, std::string> args_by_pid;
+    for (const auto& line : lines_of(run_command(args_argv, ".", {}, false).stdout)) {
+        auto parts = split_ws(line, 2);
+        if (!parts.empty()) args_by_pid[std::stoi(parts[0])] = parts.size() > 1 ? parts[1] : "";
     }
-
-    return pi;
+    std::vector<ProcessInfo> result;
+    for (const auto& line : lines_of(run_command(argv, ".", {}, false).stdout)) {
+        auto parts = split_ws(line, PS_FIELDS.size() + 1);
+        if (parts.size() <= PS_FIELDS.size()) continue;
+        ProcessInfo pi;
+        pi.pid = std::stoi(parts[0]);
+        pi.ppid = std::stoi(parts[1]);
+        pi.user = get_owner(static_cast<uid_t>(std::stoul(parts[2])));
+        pi.cpuPercent = std::stod(parts[3]);
+        pi.memPercent = std::stod(parts[4]);
+        pi.virt = std::stoll(parts[5]) * 1024;
+        pi.rss = std::stoll(parts[6]) * 1024;
+        pi.nice = ps_int(parts[7]);
+        pi.priority = ps_int(parts[8]);
+        pi.cpuTime = ps_seconds(parts[9]);
+        pi.state = parts[10];
+        pi.shared = shared_bytes(pi.pid);
+        pi.command = fs::path(parts[11]).filename().string();
+        pi.cmdline = args_by_pid.count(pi.pid) ? args_by_pid[pi.pid] : "";
+        result.push_back(pi);
+    }
+    return result;
 }
 
 } // namespace morloc_shell_internal
 
 inline std::vector<ProcessInfo> morloc_list_processes() {
-    std::vector<ProcessInfo> result;
-    DIR* dp = opendir("/proc");
-    if (!dp) return result;
-    struct dirent* ent;
-    while ((ent = readdir(dp)) != nullptr) {
-        std::string name(ent->d_name);
-        bool all_digits = !name.empty();
-        for (char c : name) {
-            if (c < '0' || c > '9') { all_digits = false; break; }
-        }
-        if (all_digits) {
-            int32_t pid = static_cast<int32_t>(std::stoi(name));
-            result.push_back(morloc_shell_internal::build_process_info(pid));
-        }
-    }
-    closedir(dp);
-    return result;
+    return morloc_shell_internal::processes({});
 }
 
 inline ProcessInfo morloc_get_process(int32_t pid) {
-    return morloc_shell_internal::build_process_info(pid);
+    auto found = morloc_shell_internal::processes({pid});
+    if (found.empty()) throw std::runtime_error("Process " + std::to_string(pid) + " not found");
+    return found[0];
 }
 
 inline std::vector<ProcessInfo> morloc_process_children(int32_t pid) {
-    std::vector<ProcessInfo> all = morloc_list_processes();
     std::vector<ProcessInfo> children;
-    for (const auto& p : all) {
+    for (const auto& p : morloc_shell_internal::processes({})) {
         if (p.ppid == pid) children.push_back(p);
     }
     return children;
@@ -938,10 +1015,82 @@ inline std::string morloc_hostname() {
     return std::string(buf);
 }
 
+namespace morloc_shell_internal {
+
+static std::string capture(const std::vector<std::string>& argv) {
+    return run_command(argv, ".", {}, false).stdout;
+}
+
+// Seconds since the epoch from `sysctl -n kern.boottime`:
+// "{ sec = 1700000000, usec = 250000 } Tue Nov 14 ...".
+static double parse_boottime(const std::string& text) {
+    std::smatch m;
+    if (!std::regex_search(text, m, std::regex(R"(sec = (\d+), usec = (\d+))"))) {
+        throw std::runtime_error("cannot read the boot time: " + text);
+    }
+    return std::stod(m[1].str()) + std::stod(m[2].str()) / 1e6;
+}
+
+// MemInfo from macOS's hw.memsize, `vm_stat` and vm.swapusage.
+static MemInfo parse_darwin_mem(int64_t total, const std::string& vm_stat, const std::string& swapusage) {
+    std::smatch m;
+    int64_t page = 4096;
+    if (std::regex_search(vm_stat, m, std::regex(R"(page size of (\d+) bytes)"))) page = std::stoll(m[1].str());
+    std::map<std::string, int64_t> pages;
+    for (const auto& line : lines_of(vm_stat)) {
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string val = line.substr(colon + 1);
+        val.erase(std::remove_if(val.begin(), val.end(), [](char c) { return c == ' ' || c == '.'; }), val.end());
+        if (!val.empty() && std::all_of(val.begin(), val.end(), ::isdigit)) {
+            pages[line.substr(0, colon)] = std::stoll(val) * page;
+        }
+    }
+    MemInfo mi = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    mi.total = total;
+    mi.free = pages["Pages free"] + pages["Pages speculative"];
+    mi.cached = pages["File-backed pages"];
+    mi.available = mi.free + pages["Pages inactive"] + pages["Pages purgeable"];
+    mi.used = total - mi.available;
+    std::regex swap_re(R"((total|used|free) = ([\d.]+)([KMG]))");
+    for (auto it = std::sregex_iterator(swapusage.begin(), swapusage.end(), swap_re); it != std::sregex_iterator(); ++it) {
+        double unit = (*it)[3] == "K" ? 1024.0 : (*it)[3] == "M" ? 1048576.0 : 1073741824.0;
+        int64_t bytes = static_cast<int64_t>(std::stod((*it)[2].str()) * unit);
+        if ((*it)[1] == "total") mi.swapTotal = bytes;
+        else if ((*it)[1] == "used") mi.swapUsed = bytes;
+        else mi.swapFree = bytes;
+    }
+    return mi;
+}
+
+// Mount point -> filesystem type from `mount` output, in either the Linux
+// form "dev on /path type ext4 (rw,...)" or the macOS form
+// "dev on /path (apfs, local, ...)".
+static std::map<std::string, std::string> parse_mount(const std::string& text) {
+    std::map<std::string, std::string> types;
+    std::regex linux_re(R"(.+? on (.+) type (\S+) \()"), darwin_re(R"(.+? on (.+) \(([^,)]+))");
+    for (const auto& line : lines_of(text)) {
+        std::smatch m;
+        if (std::regex_search(line, m, linux_re) || std::regex_search(line, m, darwin_re)) {
+            types[m[1].str()] = m[2].str();
+        }
+    }
+    return types;
+}
+
+} // namespace morloc_shell_internal
+
 inline double morloc_uptime() {
-    struct sysinfo si;
-    sysinfo(&si);
-    return static_cast<double>(si.uptime);
+#ifdef __APPLE__
+    std::string out = morloc_shell_internal::capture({"sysctl", "-n", "kern.boottime"});
+    double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    return now - morloc_shell_internal::parse_boottime(out);
+#else
+    std::ifstream f("/proc/uptime");
+    double up = 0;
+    if (!(f >> up)) throw std::runtime_error("cannot read /proc/uptime");
+    return up;
+#endif
 }
 
 inline int morloc_cpu_count() {
@@ -949,47 +1098,59 @@ inline int morloc_cpu_count() {
 }
 
 inline MemInfo morloc_mem_info() {
-    MemInfo mi = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+#ifdef __APPLE__
+    using morloc_shell_internal::capture;
+    int64_t total = std::stoll(capture({"sysctl", "-n", "hw.memsize"}));
+    return morloc_shell_internal::parse_darwin_mem(total, capture({"vm_stat"}), capture({"sysctl", "-n", "vm.swapusage"}));
+#else
+    std::map<std::string, int64_t> info;
     std::ifstream f("/proc/meminfo");
-    if (!f.is_open()) return mi;
+    if (!f.is_open()) throw std::runtime_error("cannot read /proc/meminfo");
     std::string line;
     while (std::getline(f, line)) {
         std::istringstream iss(line);
         std::string key;
-        long val;
+        int64_t val = 0;
         iss >> key >> val;
-        val *= 1024; // kB to bytes
-        key.pop_back(); // remove ':'
-        if (key == "MemTotal") mi.total = static_cast<int64_t>(val);
-        else if (key == "MemAvailable") mi.available = static_cast<int64_t>(val);
-        else if (key == "MemFree") mi.free = static_cast<int64_t>(val);
-        else if (key == "Buffers") mi.buffers = static_cast<int64_t>(val);
-        else if (key == "Cached") mi.cached = static_cast<int64_t>(val);
-        else if (key == "SwapTotal") mi.swapTotal = static_cast<int64_t>(val);
-        else if (key == "SwapFree") mi.swapFree = static_cast<int64_t>(val);
+        if (!key.empty()) info[key.substr(0, key.size() - 1)] = val * 1024; // kB to bytes
     }
+    MemInfo mi = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+    mi.total = info["MemTotal"];
+    mi.free = info["MemFree"];
+    mi.available = info.count("MemAvailable") ? info["MemAvailable"] : mi.free;
+    mi.buffers = info["Buffers"];
+    mi.cached = info["Cached"];
+    mi.swapTotal = info["SwapTotal"];
+    mi.swapFree = info["SwapFree"];
     mi.used = mi.total - mi.free - mi.buffers - mi.cached;
     mi.swapUsed = mi.swapTotal - mi.swapFree;
     return mi;
+#endif
 }
 
+// Mounted filesystems, from POSIX `df -P -k` and the `mount` listing, which
+// both Linux and macOS provide.
 inline std::vector<DiskInfo> morloc_disk_info() {
+    using morloc_shell_internal::capture;
+    auto types = morloc_shell_internal::parse_mount(capture({"mount"}));
     std::vector<DiskInfo> result;
-    ProcessResult r = morloc_shell("df -T -B1 --output=target,fstype,size,used,avail,pcent 2>/dev/null");
-    std::istringstream iss(r.stdout);
-    std::string line;
-    std::getline(iss, line); // skip header
-    while (std::getline(iss, line)) {
-        std::istringstream ls(line);
+    auto lines = morloc_shell_internal::lines_of(capture({"df", "-P", "-k"}));
+    for (size_t i = 1; i < lines.size(); i++) {
+        auto parts = morloc_shell_internal::split_ws(lines[i], 6);
+        if (parts.size() < 6) continue;
         DiskInfo di;
-        std::string pct_str;
-        long total_l, used_l, free_l;
-        ls >> di.mountPoint >> di.fsType >> total_l >> used_l >> free_l >> pct_str;
-        di.total = static_cast<int64_t>(total_l);
-        di.used = static_cast<int64_t>(used_l);
-        di.free = static_cast<int64_t>(free_l);
-        if (!pct_str.empty() && pct_str.back() == '%') pct_str.pop_back();
-        try { di.usagePercent = std::stod(pct_str); } catch (...) { di.usagePercent = 0.0; }
+        di.mountPoint = parts[5];
+        di.fsType = types.count(di.mountPoint) ? types[di.mountPoint] : "";
+        try {
+            di.total = std::stoll(parts[1]) * 1024;
+            di.used = std::stoll(parts[2]) * 1024;
+            di.free = std::stoll(parts[3]) * 1024;
+        } catch (...) {
+            continue;
+        }
+        std::string pct = parts[4];
+        if (!pct.empty() && pct.back() == '%') pct.pop_back();
+        try { di.usagePercent = std::stod(pct); } catch (...) { di.usagePercent = 0.0; }
         result.push_back(di);
     }
     return result;
@@ -1028,7 +1189,6 @@ inline mlc::Unit morloc_unset_env(const std::string& var) {
 
 inline std::vector<std::tuple<std::string, std::string>> morloc_environ() {
     std::vector<std::tuple<std::string, std::string>> result;
-    extern char** environ;
     for (char** env = environ; *env; ++env) {
         std::string entry(*env);
         auto eq = entry.find('=');
